@@ -175,9 +175,27 @@ sweep at 30° steps (`notes/yaw_sweep_contact_sheet.png`) — the landmark sits 
 frame only right around yaw = 180, and off-center at every other angle, confirming the computed
 value independently. The original default view (yaw = 30) turns out to have been ~150° off-front
 — effectively a back-left angle — which is exactly why nothing in this whole project's earlier
-screenshots ever looked like a clearly-facing figure. Fixed both the presets (`kFrontYawDeg = 180`)
-and the app's own default starting view (now a 25°-off 3/4 angle near the front, not an arbitrary
-one), verified with `notes/preset_front_left_right.png`.
+screenshots ever looked like a clearly-facing figure. Fixed both the presets (`kFrontYawDeg`) and
+the app's own default starting view (a 25°-off 3/4 angle near the front, not an arbitrary one),
+verified with `notes/preset_front_left_right.png`.
+
+**Second orientation bug, same root cause: "up" was wrong too, not just "front."** Fixing yaw made
+the front view legible, but the figure still rendered tilted onto its side — a real user caught
+this from the live page, not a screenshot. World "up" in a COLMAP/3DGS reconstruction is exactly
+as arbitrary as "front"; nothing says (0, 1, 0) has to be vertical. Measured the true up axis the
+same way as before — from the scan's own geometry, not a guess: took the opacity-weighted
+covariance of every splat position and eigendecomposed it. The figure stands on a flat mini-PC
+case, and a thin flat surface contributes far less variance through its own thickness than in its
+plane — so the *smallest*-variance eigenvector is that platform's surface normal, i.e. true up. It
+came out **~68° away from world +Y**: the reconstruction isn't just yawed, it's tilted onto its
+side outright. `kWorldAlign` (a fixed rotation matrix, derived once from this scan and folded into
+the view matrix at render time — `view * kWorldAlign`, applied nowhere else, so cloth physics keeps
+simulating in the original space) rotates that measured axis onto +Y; `kFrontYawDeg` was then
+re-measured inside the now-corrected upright frame (170°, not 180° — the earlier number was only
+approximately right, measured before the tilt was known about). Verified with
+`notes/upright_front.png`: the figure now stands upright on its platform from every preset angle,
+including top and bottom. Also tightened the default zoom per the same feedback
+(`camDistFactor` 2.5 → 1.1).
 
 ## Roadmap
 

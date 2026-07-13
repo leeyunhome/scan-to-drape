@@ -39,16 +39,30 @@ struct InputState {
     float resetYaw = 0.0f, resetPitch = 0.0f, resetDistance = 1.0f;
 };
 
-// "Front" isn't yaw=0 -- COLMAP/3DGS reconstructions land in an arbitrary world orientation,
-// unrelated to which way the actual object faces. Found empirically, not guessed: computed the
-// centroid of the figure's distinctly saturated red/yellow splats (its chest marking, the one
-// visible landmark) versus the whole splat cloud's centroid, and solved for the yaw that puts
-// the camera on that same side -- 179.2 degrees, independently confirmed by a 12-angle render
-// sweep (the marking sits dead-center in frame right around yaw=180, and visibly off-center at
-// every other angle tried). The original default view (yaw=30) was ~150 degrees away from this
-// -- effectively a back-left angle -- which is exactly why nothing in this whole session's
-// screenshots looked like a clearly-facing robot until this was measured.
-constexpr float kFrontYawDeg = 180.0f;
+// COLMAP/3DGS reconstructions land in an arbitrary world orientation -- neither which way is
+// "up" nor which way the object "faces" has any relation to world axes. Two separate fixes,
+// both measured from the scan's own geometry rather than guessed:
+//
+// 1. UP: fit the dominant flat surface the figure stands on (the mini-PC case under it) by
+//    taking the smallest-variance axis of the whole splat cloud's covariance (opacity-weighted)
+//    -- a thin flat platform contributes far less variance through its thickness than in-plane,
+//    so that axis is the platform's normal, i.e. true "up". It came out ~68 degrees away from
+//    world +Y -- the reconstruction is tilted, not just yawed. `kWorldAlign` rotates that
+//    measured up vector onto +Y; it's applied to every vertex position at render time (folded
+//    into the view matrix as `view * kWorldAlign`) so the existing Y-up camera/orbit code needs
+//    no further changes, and cloth physics keeps simulating in the original, unrotated space.
+// 2. FRONT: re-measured in the now-corrected upright frame (see kFrontYawDeg below) -- the
+//    previous 180-degree estimate was measured before this tilt was known about, so it was
+//    only approximately right.
+//
+// Both numbers are specific to this one scan; a new capture would need this block re-derived
+// (the same way: PCA for up, colored-landmark centroid for front) rather than reused as-is.
+constexpr glm::mat4 kWorldAlign = glm::mat4(
+    glm::vec4(0.6676427618834828f, -0.6745510697364807f, -0.31501430012015785f, 0.0f),
+    glm::vec4(0.6745510697364807f, 0.36906641721725464f, 0.6393519043922424f, 0.0f),
+    glm::vec4(-0.31501430012015785f, -0.6393519043922424f, 0.7014236553337718f, 0.0f),
+    glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+constexpr float kFrontYawDeg = 170.0f;
 constexpr float kPresetPitchDeg = 15.0f;  // the elevation used everywhere else in this project
 
 // Preset ids: 0 front, 1 left, 2 right, 3 top, 4 bottom, 5 reset (back to the initial
@@ -220,7 +234,11 @@ void frameStep(App& app) {
     glfwGetFramebufferSize(app.window, &fbWidth, &fbHeight);
     if (fbWidth == 0 || fbHeight == 0) return;
 
-    glm::mat4 view = app.camera.viewMatrix();
+    // camera.viewMatrix() operates in the "corrected" (measured-upright) frame; kWorldAlign
+    // rotates raw scan-space positions into that frame before the normal view transform, so
+    // every vertex shader upload and the CPU depth-sort below can just keep using `view` as
+    // if the scan had always been upright.
+    glm::mat4 view = app.camera.viewMatrix() * kWorldAlign;
     float aspect = static_cast<float>(fbWidth) / static_cast<float>(fbHeight);
     float fovY = glm::radians(50.0f);
     glm::mat4 proj = glm::perspective(fovY, aspect, 0.01f, std::max(app.camera.distance * 20.0f, 10.0f));
@@ -390,7 +408,7 @@ int main(int argc, char** argv) {
     // Default to a 3/4 view near the measured front (kFrontYawDeg), not an arbitrary angle --
     // the first thing anyone sees (native window or the web demo) should read as "a figure",
     // not an unrecognizable blob.
-    float camYawDeg = kFrontYawDeg - 25.0f, camPitchDeg = kPresetPitchDeg, camDistFactor = 2.5f;
+    float camYawDeg = kFrontYawDeg - 25.0f, camPitchDeg = kPresetPitchDeg, camDistFactor = 1.1f;
     int width = 1280, height = 800;
 
 #ifdef __EMSCRIPTEN__
@@ -479,7 +497,10 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    app.camera.target = glm::vec3(app.cloud.bounds.centerX(), app.cloud.bounds.centerY(), app.cloud.bounds.centerZ());
+    // camera.target lives in the corrected (upright) frame -- see kWorldAlign -- so orbiting
+    // and the preset yaw/pitch values below behave like a normal Y-up scene.
+    glm::vec3 rawCenter(app.cloud.bounds.centerX(), app.cloud.bounds.centerY(), app.cloud.bounds.centerZ());
+    app.camera.target = glm::vec3(kWorldAlign * glm::vec4(rawCenter, 1.0f));
     app.camera.distance = std::max(app.cloud.bounds.radius() * camDistFactor, 0.1f);
     app.camera.pitch = glm::radians(camPitchDeg);
     app.camera.yaw = glm::radians(camYawDeg);
